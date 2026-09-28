@@ -6,6 +6,7 @@ import {
   applyPitch, currentBatter, maybeRelieve, newGame, nextHalf, simulateGame, total, fielding,
 } from '../sim/game';
 import { resolvePlay } from '../sim/outcome';
+import { resolveSwing, timingWindow } from '../sim/swing';
 import { DIFFICULTIES } from '../sim/difficulty';
 import { seededRandom } from '../sim/rng';
 
@@ -199,5 +200,40 @@ describe('simulated season balance', () => {
       return n;
     };
     expect(count(make(9))).toBeGreaterThan(count(make(2)) * 2);
+  });
+});
+
+describe('difficulty help for human batters', () => {
+  const hitter = { bat: { contact: 5, power: 5, eye: 5, speed: 5 }, bats: 'R' } as Player;
+
+  /** A typical human: a bit early or late, and aim a little off. */
+  const inPlayRate = (level: 'ROOKIE' | 'PRO' | 'ALLSTAR') => {
+    const d = DIFFICULTIES[level];
+    const rnd = seededRandom(`human-${level}`);
+    let inPlay = 0;
+    const n = 4000;
+    for (let i = 0; i < n; i++) {
+      const errMs = (rnd() - 0.5) * 360; // within ±180ms of perfect
+      const aimErr = (1 - d.autoAim) * (rnd() - 0.5) * 1.2;
+      const r = resolveSwing({ dx: aimErr * 0.5, dy: aimErr, t: errMs / timingWindow(hitter, d) }, hitter, rnd, d);
+      if (r.kind === 'inPlay') inPlay++;
+    }
+    return inPlay / n;
+  };
+
+  it('puts more balls in play on easier levels', () => {
+    const rookie = inPlayRate('ROOKIE');
+    const pro = inPlayRate('PRO');
+    const allstar = inPlayRate('ALLSTAR');
+    expect(rookie).toBeGreaterThan(pro);
+    expect(pro).toBeGreaterThan(allstar);
+    expect(rookie).toBeGreaterThan(0.5);
+  });
+
+  it('leaves the computer batter unassisted', () => {
+    const rnd = seededRandom('cpu');
+    let fouls = 0;
+    for (let i = 0; i < 2000; i++) if (resolveSwing({ dx: 0, dy: 0, t: 0 }, hitter, rnd).kind === 'foul') fouls++;
+    expect(fouls / 2000).toBeGreaterThan(0.15);
   });
 });

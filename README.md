@@ -17,8 +17,8 @@ offline.
 
 | Level | What it's like |
 | --- | --- |
-| Rookie | Slow pitches, and the game aims for you, so you only time the swing. |
-| Pro | Real speed, with aim assist. |
+| Rookie | Slow pitches, a wide timing window, and the ball glows when it's time to swing. The game aims for you. |
+| Pro | Real speed, aim assist, and the same swing glow. |
 | All-Star | Fast pitches, you aim yourself, and computer hitters are sharper. |
 
 **Controls:** on a phone, use the on-screen D-pad and A/B buttons (portrait or

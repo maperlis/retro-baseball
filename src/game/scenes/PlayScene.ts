@@ -135,7 +135,7 @@ export class PlayScene implements Scene {
           x: this.cursor.x + (pitch.loc.x - this.cursor.x) * this.diff.autoAim,
           y: this.cursor.y + (pitch.loc.y - this.cursor.y) * this.diff.autoAim,
         };
-        const r = resolveSwing({ dx: pitch.loc.x - aim.x, dy: pitch.loc.y - aim.y, t }, batter, this.rnd, this.diff.reach);
+        const r = resolveSwing({ dx: pitch.loc.x - aim.x, dy: pitch.loc.y - aim.y, t }, batter, this.rnd, this.diff);
         outcome = r.kind === 'miss' ? { kind: 'swinging' } : r.kind === 'foul' ? { kind: 'foul' } : r;
       }
     } else if (!this.cpuSwingIn) {
@@ -422,7 +422,8 @@ export class PlayScene implements Scene {
     let swing = -1;
     if (this.userBatting && this.swingAt != null) swing = (now - this.swingAt) / 200;
     if (!this.userBatting && this.cpuSwingIn && this.pitch && this.phase !== 'windup' && this.phase !== 'aim') {
-      const tW = timingWindow(batter, this.diff);
+      // The computer's timing error is in unassisted windows, so animate with those.
+      const tW = 90 + batter.bat.contact * 5;
       const start = this.releaseAt + this.pitch.travelMs + this.cpuSwingIn.t * tW - 70;
       if (now >= start) swing = (now - start) / 200;
     }
@@ -434,7 +435,14 @@ export class PlayScene implements Scene {
     const mittLoc = !this.userBatting && this.phase === 'aim' ? this.cursor : this.pitch ? (this.phase === 'flight' ? this.pitch.target : this.pitch.loc) : { x: 0, y: 0 };
     drawCatcher(g, 128, 180, fKit, toScreen(mittLoc));
 
-    if (ballPos) drawBall(g, ballPos[0], ballPos[1], ballR);
+    if (ballPos) {
+      // Timing cue (Rookie/Pro): the ball glows while a swing now would be on time.
+      if (this.phase === 'flight' && this.pitch && this.userBatting && this.diff.cue && this.swingAt == null) {
+        const t = (now - this.releaseAt - this.pitch.travelMs) / timingWindow(batter, this.diff);
+        if (t > -0.6 && t < 0.45) g.circle(ballPos[0], ballPos[1], ballR + 3, C.yellow);
+      }
+      drawBall(g, ballPos[0], ballPos[1], ballR);
+    }
     if (this.catchFlash > 0 && this.pitch) {
       const [x, y] = toScreen(this.pitch.loc);
       g.frame(x - 6, y - 6, 13, 13, C.white);

@@ -19,14 +19,23 @@ export const timingWindow = (b: Player, diff: DiffConfig) => (90 + b.bat.contact
 
 export const reachOf = (b: Player, diff: DiffConfig) => (0.42 + b.bat.contact * 0.03) * diff.reach;
 
-export function resolveSwing(inp: SwingInput, batter: Player, rnd: Rng, reachMult = 1): SwingResult {
-  const reach = (0.42 + batter.bat.contact * 0.03) * reachMult;
+/** Help given to a human batter by the difficulty level. The computer bats with none. */
+export interface SwingAssist {
+  reach: number;
+  foul: number;
+  boost: number;
+}
+
+const NO_ASSIST: SwingAssist = { reach: 1, foul: 1, boost: 0 };
+
+export function resolveSwing(inp: SwingInput, batter: Player, rnd: Rng, assist: SwingAssist = NO_ASSIST): SwingResult {
+  const reach = (0.42 + batter.bat.contact * 0.03) * assist.reach;
   const d = Math.hypot(inp.dx * 0.6, inp.dy);
   const at = Math.abs(inp.t);
   if (d > reach || at > 1.5) return { kind: 'miss' };
 
-  const q = clamp(1 - (d / reach) * 0.55 - Math.min(1, at / 1.5) * 0.45, 0, 1);
-  if (at > 1.05 || rnd() < 0.22 + 0.4 * (1 - q)) return { kind: 'foul' };
+  const q = clamp(1 - (d / reach) * 0.55 - Math.min(1, at / 1.5) * 0.45 + assist.boost, 0, 1);
+  if (at > 1.05 || rnd() < (0.22 + 0.4 * (1 - q)) * assist.foul) return { kind: 'foul' };
 
   const ev = 62 + q * (38 + batter.bat.power * 2.2) + gauss(rnd) * 6;
   // Bat under the ball (pitch above aim, dy > 0) lifts it.
