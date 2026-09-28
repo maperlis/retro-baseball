@@ -3,14 +3,16 @@ import type { Gfx } from '../render/gfx';
 import { C } from '../render/palette';
 import { teamColors } from '../data/teamColors';
 import type { GameTeam } from '../data/lineup';
+import type { Player } from '../data/types';
 import type { DiffConfig } from '../sim/difficulty';
 import {
-  applyPitch, batting, currentBatter, currentFatigue, fielding, maybeRelieve, newGame, nextHalf, total,
+  applyPitch, batting, cpuPitch, currentBatter, currentFatigue, fielding, maybeRelieve, newGame, nextHalf, total,
   type GameEvent, type GameState,
 } from '../sim/game';
 import { PITCH_INFO, PITCH_TYPES, choosePitch, fatigue, isStrike, makePitch } from '../sim/pitch';
 import { cpuSwing, reachOf, resolveSwing, timingWindow, type SwingInput } from '../sim/swing';
 import { clamp } from '../sim/rng';
+import { resolvePlay } from '../sim/outcome';
 import type { Bases, Loc, Pitch, PitchOutcome, PitchType } from '../sim/types';
 import { drawBall, drawBatter, drawCatcher, drawDot, drawPitcher, kitFor, type Kit, type PitcherPose } from '../render/sprites';
 import { FIELDER_SPOT, basePt, drawField, fieldPt, HOME } from '../render/field';
@@ -18,7 +20,7 @@ import { drawHUD, drawLineScore } from '../render/hud';
 import { TitleScene } from './TitleScene';
 import type { Who } from '../engine/input';
 
-type Phase = 'intro' | 'aim' | 'windup' | 'flight' | 'hitAway' | 'field' | 'result' | 'switch' | 'final';
+type Phase = 'intro' | 'sim' | 'aim' | 'windup' | 'flight' | 'hitAway' | 'field' | 'result' | 'switch' | 'final';
 
 // Strike zone on screen (behind-the-plate view).
 const ZX = 128;
@@ -31,6 +33,33 @@ const CURSOR_SPEED = 2.6; // zone units per second
 
 /** 0 = computer, 1 = player 1, 2 = player 2. */
 export type Controller = 0 | 1 | 2;
+
+export interface PlayOptions {
+  away: GameTeam;
+  home: GameTeam;
+  /** Who controls each team: 0 = computer, 1 = player 1, 2 = player 2. */
+  ctl: Record<'home' | 'away', Controller>;
+  innings: number;
+  diff: DiffConfig;
+  /** Home Run Derby: this hitter swings until they make `outs` outs. */
+  derby?: { hitter: Player; outs: number };
+  /** Be a Player: you only bat when this player is up; everything else is simulated. */
+  hero?: { player: Player; side: 'home' | 'away' };
+  /** Called when the finished game is dismissed (defaults to the title screen). */
+  onDone?: (s: GameState) => void;
+}
+
+const DERBY_KEY = 'retro-ball:derby-best';
+
+/** The batting-practice pitcher for the derby: slow, and always around the plate. */
+function coach(): Player {
+  return {
+    id: -99, name: 'COACH', fullName: 'Coach', number: '', pos: 'P', bats: 'R', throws: 'R',
+    isPitcher: true, isHitter: false,
+    bat: { contact: 1, power: 1, eye: 1, speed: 1 }, pit: { velo: 1, stuff: 1, control: 10, stamina: 10 },
+    batLine: '', pitLine: 'BATTING PRACTICE', pa: 0, gs: 0, ip: 0,
+  };
+}
 
 interface Banner {
   big: string;
@@ -59,16 +88,37 @@ export class PlayScene implements Scene {
   private contactAt: [number, number] = [ZX, ZY];
   private catchFlash = 0;
 
-  constructor(
-    private game: RetroGame,
-    away: GameTeam,
-    home: GameTeam,
-    /** Who controls each team: 0 = computer, 1 = player 1, 2 = player 2. */
-    private ctl: Record<'home' | 'away', Controller>,
-    innings: number,
-    private diff: DiffConfig,
-  ) {
-    this.s = newGame(away, home, innings);
+  private ctl: Record<'home' | 'away', Controller>;
+  private diff: DiffConfig;
+  private derby: PlayOptions['derby'];
+  private hero: PlayOptions['hero'];
+  private derbyHR = 0;
+  private derbyOuts = 0;
+  private derbyLong = 0;
+  private derbyRecord: { hrs: number; name: string } | null = null;
+  private derbyNewRecord = false;
+  private simNotes: string[] = [];
+  private heroLine = { ab: 0, h: 0, hr: 0, rbi: 0, bb: 0 };
+
+  constructor(private game: RetroGame, private opts: PlayOptions) {
+    this.ctl = opts.ctl;
+    this.diff = opts.diff;
+    this.derby = opts.derby;
+    this.hero = opts.hero;
+    if (this.derby) {
+      // The hitter bats every time; the home side is the coach on the mound.
+      const hitter = this.derby.hitter;
+      const bats: GameTeam = { ...opts.away, lineup: Array.from({ length: 9 }, () => ({ player: hitter, pos: 'DH' })) };
+      const pitches: GameTeam = { ...opts.home, starter: coach(), bullpen: [] };
+      this.s = newGame(bats, pitches, 99);
+      try {
+        this.derbyRecord = JSON.parse(localStorage.getItem(DERBY_KEY) ?? 'null');
+      } catch {
+        /* no saved record */
+      }
+    } else {
+      this.s = newGame(opts.away, opts.home, opts.innings);
+    }
     this.startPA();
   }
 
@@ -90,7 +140,12 @@ export class PlayScene implements Scene {
   }
 
   private get humanBats() {
-    return this.batterCtl !== 0;
+    return this.batterCtl !== 0 || this.heroUp();
+  }
+
+  /** Be a Player: is it your player's turn at the plate? */
+  private heroUp(): boolean {
+    return !!this.hero && this.batSide === this.hero.side && currentBatter(this.s).player.id === this.hero.player.id;
   }
 
   private get humanPitches() {
@@ -122,6 +177,42 @@ export class PlayScene implements Scene {
   /* ------------------------------------------------------------------ flow */
 
   private startPA() {
+    if (this.hero && !this.heroUp()) {
+      this.simNotes = this.simulateUntilHero();
+      if (this.s.final) this.finish();
+      else this.setPhase('sim');
+      return;
+    }
+    this.introPA();
+  }
+
+  /** Be a Player: play everything out instantly until your player is up. */
+  private simulateUntilHero(): string[] {
+    const notes: string[] = [];
+    for (let guard = 0; guard < 4000 && !this.s.final; guard++) {
+      if (this.s.halfOver) {
+        nextHalf(this.s);
+        continue;
+      }
+      if (this.heroUp()) break;
+      if (this.s.balls === 0 && this.s.strikes === 0) maybeRelieve(this.s);
+      const abbr = batting(this.s).gt.team.abbr;
+      const who = currentBatter(this.s).player.name;
+      const { outcome } = cpuPitch(this.s, this.rnd, this.diff);
+      const ev = applyPitch(this.s, outcome, this.rnd);
+      if (ev.runs > 0 || ev.play?.type === 'HR') {
+        notes.push(`${abbr} ${who}: ${ev.play ? ev.play.label : ev.text}${ev.runs ? ` +${ev.runs}` : ''}`);
+      }
+    }
+    return notes.slice(-6);
+  }
+
+  private introPA() {
+    if (this.derby) {
+      this.banner = { big: 'HOME RUN DERBY', small: `${this.derby.outs} OUTS - SWING AWAY!`, color: C.yellow };
+      this.setPhase('intro');
+      return;
+    }
     const reliever = maybeRelieve(this.s);
     const b = currentBatter(this.s);
     if (reliever) {
@@ -149,7 +240,11 @@ export class PlayScene implements Scene {
   private throwPitch(now: number) {
     const f = fielding(this.s);
     const b = currentBatter(this.s).player;
-    if (this.humanPitches) {
+    if (this.derby) {
+      const target = { x: (this.rnd() - 0.5) * 0.9, y: (this.rnd() - 0.5) * 0.9 };
+      const p = makePitch(f.pitcher, 0, 'FB', target, this.rnd, this.diff);
+      this.pitch = { ...p, speed: 72, travelMs: p.travelMs * 1.25 };
+    } else if (this.humanPitches) {
       this.pitch = makePitch(f.pitcher, f.pitches, this.pitchType, { ...this.target }, this.rnd, this.diff, this.diff.pitchScatter);
     } else {
       const { type, target } = choosePitch(this.s.balls, this.s.strikes, this.rnd, this.diff);
@@ -164,22 +259,13 @@ export class PlayScene implements Scene {
   }
 
   private resolve() {
+    if (this.derby) return this.resolveDerby();
     const pitch = this.pitch!;
     const batter = currentBatter(this.s).player;
+    const heroAB = this.heroUp();
     let outcome: PitchOutcome;
     if (this.humanBats) {
-      if (this.swingAt == null) {
-        outcome = { kind: isStrike(pitch.loc) ? 'called' : 'ball' };
-      } else {
-        const W = timingWindow(batter, this.diff);
-        const t = (this.swingAt - this.releaseAt - pitch.travelMs) / W;
-        const aim = {
-          x: this.cursor.x + (pitch.loc.x - this.cursor.x) * this.diff.autoAim,
-          y: this.cursor.y + (pitch.loc.y - this.cursor.y) * this.diff.autoAim,
-        };
-        const r = resolveSwing({ dx: pitch.loc.x - aim.x, dy: pitch.loc.y - aim.y, t }, batter, this.rnd, this.diff);
-        outcome = r.kind === 'miss' ? { kind: 'swinging' } : r.kind === 'foul' ? { kind: 'foul' } : r;
-      }
+      outcome = this.humanSwing();
     } else if (!this.cpuSwingIn) {
       outcome = { kind: isStrike(pitch.loc) ? 'called' : 'ball' };
     } else {
@@ -192,6 +278,7 @@ export class PlayScene implements Scene {
     this.contactAt = toScreen(pitch.loc);
     this.event = applyPitch(this.s, outcome, this.rnd);
     const chip = this.game.chip;
+    if (heroAB) this.recordHero(this.event);
 
     if (outcome.kind === 'inPlay' || outcome.kind === 'foul') {
       chip.crack();
@@ -216,8 +303,80 @@ export class PlayScene implements Scene {
     this.setPhase('result');
   }
 
+  /** Your swing's result: the swing input for a human batter, shared by game and derby. */
+  private humanSwing(): PitchOutcome {
+    const pitch = this.pitch!;
+    const batter = currentBatter(this.s).player;
+    if (this.swingAt == null) return { kind: isStrike(pitch.loc) ? 'called' : 'ball' };
+    const W = timingWindow(batter, this.diff);
+    const t = (this.swingAt - this.releaseAt - pitch.travelMs) / W;
+    const aim = {
+      x: this.cursor.x + (pitch.loc.x - this.cursor.x) * this.diff.autoAim,
+      y: this.cursor.y + (pitch.loc.y - this.cursor.y) * this.diff.autoAim,
+    };
+    const r = resolveSwing({ dx: pitch.loc.x - aim.x, dy: pitch.loc.y - aim.y, t }, batter, this.rnd, this.diff);
+    return r.kind === 'miss' ? { kind: 'swinging' } : r.kind === 'foul' ? { kind: 'foul' } : r;
+  }
+
+  /** Derby: any swing that isn't a home run is an out. Takes are free. */
+  private resolveDerby() {
+    const chip = this.game.chip;
+    const outcome = this.humanSwing();
+    this.outcome = outcome;
+    this.basesBefore = [null, null, null];
+    this.contactAt = toScreen(this.pitch!.loc);
+    if (this.swingAt == null) {
+      this.event = null;
+      this.catchFlash = 0.15;
+      chip.mitt();
+      this.banner = { big: 'TAKE', small: 'WAIT FOR YOUR PITCH', color: C.white };
+      this.setPhase('result');
+      return;
+    }
+    if (outcome.kind !== 'inPlay') {
+      this.derbyOuts++;
+      this.event = null;
+      chip.out();
+      this.banner = { big: outcome.kind === 'foul' ? 'FOUL - OUT' : 'MISS - OUT', small: this.derbyOutsLeft(), color: C.orange };
+      this.setPhase('result');
+      return;
+    }
+    const play = resolvePlay(outcome.ball, this.derby!.hitter, [null, null, null], 0, this.rnd);
+    if (play.type === 'HR') {
+      this.derbyHR++;
+      this.derbyLong = Math.max(this.derbyLong, Math.round(play.dist));
+    } else {
+      this.derbyOuts++;
+    }
+    this.event = { kind: 'play', text: play.label, play, moves: play.moves, runs: 0 };
+    chip.crack();
+    this.setPhase('hitAway');
+  }
+
+  private derbyOutsLeft() {
+    const left = this.derby!.outs - this.derbyOuts;
+    return left > 0 ? `${left} OUT${left === 1 ? '' : 'S'} LEFT` : 'LAST OUT';
+  }
+
+  private recordHero(ev: GameEvent) {
+    const h = this.heroLine;
+    if (ev.kind === 'walk') h.bb++;
+    else if (ev.kind === 'strikeout') h.ab++;
+    else if (ev.kind === 'play' && ev.play) {
+      if (ev.play.label !== 'SAC FLY') h.ab++;
+      if (['1B', '2B', '3B', 'HR'].includes(ev.play.type)) h.h++;
+      if (ev.play.type === 'HR') h.hr++;
+    }
+    h.rbi += ev.runs;
+  }
+
   private afterResult() {
     const s = this.s;
+    if (this.derby) {
+      if (this.derbyOuts >= this.derby.outs) this.finish();
+      else this.nextPitch();
+      return;
+    }
     if (s.final) {
       this.finish();
     } else if (s.halfOver) {
@@ -230,11 +389,32 @@ export class PlayScene implements Scene {
   }
 
   private finish() {
-    // A human always wins in two-player mode, so always celebrate there.
-    const winner = total(this.s.home) > total(this.s.away) ? this.ctl.home : this.ctl.away;
-    if (winner !== 0) this.game.chip.charge();
+    if (this.derby) {
+      const best = this.derbyRecord?.hrs ?? -1;
+      if (this.derbyHR > 0 && this.derbyHR > best) {
+        this.derbyNewRecord = this.derbyHR > 0;
+        this.derbyRecord = { hrs: this.derbyHR, name: this.derby.hitter.name };
+        try {
+          localStorage.setItem(DERBY_KEY, JSON.stringify(this.derbyRecord));
+        } catch {
+          /* record just won't persist */
+        }
+      }
+      if (this.derbyHR > 0) this.game.chip.charge();
+      else this.game.chip.lose();
+      this.setPhase('final');
+      return;
+    }
+    if (this.userWon()) this.game.chip.charge();
     else this.game.chip.lose();
     this.setPhase('final');
+  }
+
+  /** Did a human win? (Always true in two-player mode.) */
+  private userWon(): boolean {
+    const homeWon = total(this.s.home) > total(this.s.away);
+    if (this.hero) return homeWon === (this.hero.side === 'home');
+    return (homeWon ? this.ctl.home : this.ctl.away) !== 0;
   }
 
   private playBanner(ev: GameEvent): Banner {
@@ -279,6 +459,10 @@ export class PlayScene implements Scene {
     switch (this.phase) {
       case 'intro':
         if (this.t > 1.3 || (skip && this.t > 0.2)) this.nextPitch();
+        break;
+
+      case 'sim':
+        if (skip && this.t > 0.3) this.introPA();
         break;
 
       case 'aim': {
@@ -328,7 +512,11 @@ export class PlayScene implements Scene {
         const dur = this.fieldDuration();
         if (this.t >= dur || (skip && this.t > 0.3)) {
           const ev = this.event!;
-          this.banner = this.playBanner(ev);
+          this.banner = this.derby
+            ? ev.play?.type === 'HR'
+              ? { big: 'HOME RUN!', small: `${Math.round(ev.play.dist)} FEET - ${this.derbyHR} TOTAL`, color: C.yellow }
+              : { big: 'OUT', small: this.derbyOutsLeft(), color: C.orange }
+            : this.playBanner(ev);
           if (ev.play?.type === 'HR') chip.homer();
           else if (ev.play?.type === 'OUT') chip.out();
           else chip.hit();
@@ -353,7 +541,10 @@ export class PlayScene implements Scene {
         break;
 
       case 'final':
-        if (this.t > 1 && (skip || input.pressed('start'))) this.game.go(new TitleScene(this.game));
+        if (this.t > 1 && (skip || input.pressed('start'))) {
+          if (this.opts.onDone) this.opts.onDone(this.s);
+          else this.game.go(new TitleScene(this.game));
+        }
         break;
     }
   }
@@ -377,13 +568,14 @@ export class PlayScene implements Scene {
 
   render(g: Gfx, now: number) {
     const showField = this.phase === 'field' || (this.phase === 'result' && this.event?.kind === 'play');
-    if (this.phase === 'switch' || this.phase === 'final') {
+    if (this.phase === 'switch' || this.phase === 'final' || this.phase === 'sim') {
       this.renderScoreboard(g);
       return;
     }
     if (showField) this.renderField(g);
     else this.renderPlate(g, now);
-    drawHUD(g, this.s);
+    if (this.derby) this.renderDerbyHUD(g);
+    else drawHUD(g, this.s);
     this.renderBottom(g);
     if (this.banner && (this.phase === 'intro' || this.phase === 'result')) this.renderBanner(g, this.banner);
   }
@@ -600,16 +792,57 @@ export class PlayScene implements Scene {
     if (b.small) g.ctext(b.small, y + 24, C.white, 1, false);
   }
 
+  private renderDerbyHUD(g: Gfx) {
+    g.box(2, 2, 92, 31);
+    g.text(`HR   ${this.derbyHR}`, 8, 6, C.yellow);
+    g.text(`OUTS ${this.derbyOuts}/${this.derby!.outs}`, 8, 15, C.white);
+    g.text(`LONG ${this.derbyLong || '-'}`, 8, 24, C.light);
+    if (this.derbyRecord) {
+      g.box(176, 2, 78, 22);
+      g.text('RECORD', 181, 6, C.light);
+      g.text(`${this.derbyRecord.hrs} HR`, 181, 15, C.yellow);
+    }
+  }
+
+  private heroSummary(): string {
+    const h = this.heroLine;
+    const bits = [`${h.h}-${h.ab}`];
+    if (h.hr) bits.push(`${h.hr} HR`);
+    if (h.rbi) bits.push(`${h.rbi} RBI`);
+    if (h.bb) bits.push(`${h.bb} BB`);
+    return `${this.hero!.player.name}  ${bits.join('  ')}`;
+  }
+
   private renderScoreboard(g: Gfx) {
     const s = this.s;
     g.clear(C.navy);
     g.rect(0, 0, 256, 40, C.wall);
+    if (this.derby && this.phase === 'final') {
+      g.ctext('DERBY OVER', 12, C.white, 2);
+      g.ctext(this.derby.hitter.name, 56, C.white);
+      g.ctext(`${this.derbyHR} HOME RUN${this.derbyHR === 1 ? '' : 'S'}`, 74, C.yellow, 2);
+      if (this.derbyLong) g.ctext(`LONGEST: ${this.derbyLong} FEET`, 100, C.light);
+      if (this.derbyNewRecord) g.ctext('NEW RECORD!', 124, C.yellow, 2);
+      else if (this.derbyRecord) g.ctext(`RECORD: ${this.derbyRecord.hrs} BY ${this.derbyRecord.name}`, 128, C.light);
+      if (this.t > 1 && Math.floor(this.t * 2) % 2 === 0) g.ctext('PRESS A', 180, C.white);
+      return;
+    }
+    if (this.phase === 'sim') {
+      g.ctext(`${s.half === 'top' ? 'TOP' : 'BOTTOM'} OF THE ${ordinal(s.inning)}`, 16, C.white);
+      drawLineScore(g, s, 48);
+      g.ctext(this.simNotes.length ? 'MEANWHILE...' : 'QUIET INNINGS...', 92, C.light);
+      this.simNotes.forEach((n, i) => g.ctext(n.slice(0, 42), 104 + i * 10, C.white, 1, false));
+      if (this.heroLine.ab || this.heroLine.bb) g.ctext(`YOU: ${this.heroSummary()}`.slice(0, 42), 172, C.yellow);
+      if (this.t > 0.3 && Math.floor(this.t * 2) % 2 === 0) g.ctext(`YOU'RE UP! PRESS A`, 190, C.yellow);
+      return;
+    }
     if (this.phase === 'final') {
       const winner = total(s.home) > total(s.away) ? this.ctl.home : this.ctl.away;
       g.ctext('FINAL', 12, C.white, 2);
       drawLineScore(g, s, 60);
       if (this.twoPlayer) g.ctext(`P${winner} WINS!`, 112, C.yellow, 3);
-      else g.ctext(winner ? 'YOU WIN!' : 'YOU LOSE', 112, winner ? C.yellow : C.orange, 3);
+      else g.ctext(this.userWon() ? 'YOU WIN!' : 'YOU LOSE', 112, this.userWon() ? C.yellow : C.orange, 3);
+      if (this.hero) g.ctext(this.heroSummary().slice(0, 42), 150, C.white);
       if (this.t > 1 && Math.floor(this.t * 2) % 2 === 0) g.ctext('PRESS A FOR NEW GAME', 180, C.white);
     } else {
       const label = s.half === 'top' ? `MIDDLE OF THE ${ordinal(s.inning)}` : `END OF THE ${ordinal(s.inning)}`;
@@ -619,10 +852,12 @@ export class PlayScene implements Scene {
       // Next half: the side that just pitched comes up to bat.
       const nextBatCtl = this.ctl[this.pitchSide];
       const nextPitchCtl = this.ctl[this.batSide];
-      g.ctext(
-        this.twoPlayer ? `P${nextBatCtl} BATS - P${nextPitchCtl} PITCHES` : nextBatCtl ? 'YOUR TURN TO BAT' : 'YOUR TURN TO PITCH',
-        120, C.yellow,
-      );
+      if (!this.hero) {
+        g.ctext(
+          this.twoPlayer ? `P${nextBatCtl} BATS - P${nextPitchCtl} PITCHES` : nextBatCtl ? 'YOUR TURN TO BAT' : 'YOUR TURN TO PITCH',
+          120, C.yellow,
+        );
+      }
       g.ctext(`${nextBat.gt.team.name.toUpperCase()} UP`, 134, C.light);
       g.ctext('PRESS A', 180, C.white);
     }

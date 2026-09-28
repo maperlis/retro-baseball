@@ -52,3 +52,41 @@ export function buildLineup(team: Team, rnd: () => number): GameTeam {
 
   return { team, lineup: order, starter, bullpen };
 }
+
+/** Hitters on the roster who aren't in the batting order: the bench. */
+export function benchOf(gt: GameTeam): Player[] {
+  const inOrder = new Set(gt.lineup.map((l) => l.player.id));
+  return gt.team.players.filter((p) => p.isHitter && !inOrder.has(p.id)).sort((a, b) => b.pa - a.pa);
+}
+
+/** Every pitcher, starters first: the choices for today's starting pitcher. */
+export function startersOf(team: Team): Player[] {
+  return team.players
+    .filter((p) => p.isPitcher)
+    .sort((a, b) => b.gs - a.gs || b.pit.stamina - a.pit.stamina);
+}
+
+/** Swap in a new starting pitcher; the bullpen is everyone else, best saved for last. */
+export function withStarter(gt: GameTeam, starter: Player): GameTeam {
+  const pitchers = gt.team.players.filter((p) => p.isPitcher && p !== starter);
+  let bullpen = pitchers.filter((p) => p.gs < 5);
+  if (bullpen.length === 0) bullpen = pitchers;
+  bullpen.sort((a, b) => pitchValue(a) - pitchValue(b));
+  return { ...gt, starter, bullpen };
+}
+
+/** Hitters for pickers (derby, be-a-player), sluggers first. */
+export function hittersByPower(team: Team): Player[] {
+  return team.players.filter((p) => p.isHitter).sort((a, b) => b.bat.power - a.bat.power || b.pa - a.pa);
+}
+
+/** Make sure a chosen player is in the batting order (Be a Player), taking the DH's spot. */
+export function ensureInLineup(gt: GameTeam, p: Player): GameTeam {
+  if (gt.lineup.some((l) => l.player.id === p.id)) return gt;
+  const lineup = [...gt.lineup];
+  let i = lineup.findIndex((l) => l.pos === 'DH');
+  if (i < 0) i = lineup.findIndex((l) => l.pos === p.pos);
+  if (i < 0) i = 3;
+  lineup[i] = { player: p, pos: lineup[i].pos };
+  return { ...gt, lineup };
+}

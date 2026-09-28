@@ -2,10 +2,9 @@ import type { RetroGame, Scene } from '../RetroGame';
 import type { Gfx } from '../render/gfx';
 import { C } from '../render/palette';
 import { teamColors } from '../data/teamColors';
-import { buildLineup } from '../data/lineup';
 import { DIFFICULTIES, DIFFICULTY_ORDER } from '../sim/difficulty';
 import { TeamSelectScene } from './TeamSelectScene';
-import { PlayScene } from './PlayScene';
+import { startFromSetup } from './flow';
 
 const INNINGS = [3, 6, 9];
 type Item = 'difficulty' | 'innings' | 'side' | 'play';
@@ -39,7 +38,7 @@ export class SetupScene implements Scene {
       this.game.saveSettings();
     }
     if (input.pressed('b')) {
-      this.game.go(new TeamSelectScene(this.game, 'cpu'));
+      this.game.go(new TeamSelectScene(this.game, settings.mode === 'tournament' ? 'user' : 'cpu'));
       return;
     }
     if (input.pressed('a') || input.pressed('start')) {
@@ -53,22 +52,9 @@ export class SetupScene implements Scene {
   }
 
   private async start() {
-    const { userTeam, cpuTeam, settings } = this.game;
-    if (!userTeam || !cpuTeam) return;
     this.status = 'loading';
     try {
-      const [u, c] = await Promise.all([this.game.roster(userTeam), this.game.roster(cpuTeam)]);
-      const rnd = Math.random;
-      const user = buildLineup(u, rnd);
-      const cpu = buildLineup(c, rnd);
-      this.game.chip.charge();
-      // Player 1 has the first-picked team; the other is the computer or player 2.
-      const other = settings.players === 2 ? 2 : 0;
-      const ctl = settings.userHome ? { home: 1, away: other } as const : { home: other, away: 1 } as const;
-      this.game.go(
-        new PlayScene(this.game, settings.userHome ? cpu : user, settings.userHome ? user : cpu,
-          ctl, settings.innings, DIFFICULTIES[settings.difficulty]),
-      );
+      await startFromSetup(this.game);
     } catch {
       this.status = 'error';
     }
@@ -86,7 +72,12 @@ export class SetupScene implements Scene {
     };
     const two = settings.players === 2;
     if (userTeam) badge(userTeam.abbr, 24, two ? 'PLAYER 1' : 'YOU');
-    if (cpuTeam) badge(cpuTeam.abbr, 160, two ? 'PLAYER 2' : 'CPU');
+    if (settings.mode === 'tournament') {
+      g.rect(160, 14, 72, 36, C.dark);
+      g.stext('8-TEAM', 178, 20, C.yellow);
+      g.stext('BRACKET', 175, 32, C.yellow);
+    } else if (cpuTeam) badge(cpuTeam.abbr, 160, two ? 'PLAYER 2' : 'CPU');
+    if (settings.mode === 'player' && this.game.hero) g.ctext(`YOU ARE ${this.game.hero.name}`, 64, C.yellow);
     g.ctext('VS', 26, C.yellow, 2);
 
     const rows: [Item, string, string][] = [

@@ -5,6 +5,20 @@ and play an exhibition: you bat and pitch, and fielding and baserunning are
 simulated. It runs in the browser, installs to a phone's home screen, and works
 offline.
 
+## Game modes
+
+| Mode | What it is |
+| --- | --- |
+| 1 Player | You vs. the computer. You bat and pitch. |
+| 2 Players | Two people on one device take turns batting and pitching. |
+| Home Run Derby | Pick a hitter. Batting-practice pitches, 10 outs; any swing that isn't a homer is an out. Your record is saved. |
+| Be a Player | Pick one hitter. The rest of the game plays itself, and you bat every time your player comes up. You get a box-score line at the end. |
+| Tournament | An 8-team single-elimination bracket. You play your games and the others are simulated. Progress is saved, so you can quit and come back. |
+
+**Set your lineup:** before a game, move batters around the order (press A on
+one, then A on another to swap), bring in a bench player (LEFT/RIGHT on a
+batter), and choose your starting pitcher (LEFT/RIGHT on the SP row).
+
 ## How to play
 
 1. Choose **1 PLAYER** (vs. the computer) or **2 PLAYERS**, then pick teams.

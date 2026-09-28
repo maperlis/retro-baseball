@@ -3,8 +3,9 @@ import { C } from './render/palette';
 import { Input } from './engine/input';
 import { Chip } from './engine/audio';
 import { loadTeam, loadTeams, type Source } from './data/mlbClient';
-import type { Team, TeamInfo } from './data/types';
+import type { Player, Team, TeamInfo } from './data/types';
 import type { Difficulty } from './sim/difficulty';
+import type { Mode } from './scenes/flow';
 import { TitleScene } from './scenes/TitleScene';
 
 export interface Scene {
@@ -13,6 +14,7 @@ export interface Scene {
 }
 
 export interface Settings {
+  mode: Mode;
   /** 1 = you vs the computer; 2 = two people on one device. */
   players: 1 | 2;
   difficulty: Difficulty;
@@ -33,7 +35,9 @@ export class RetroGame {
   source: Source | 'loading' = 'loading';
   userTeam: TeamInfo | null = null;
   cpuTeam: TeamInfo | null = null;
-  settings: Settings = { players: 1, difficulty: 'ROOKIE', innings: 3, userHome: true };
+  settings: Settings = { mode: 'game1', players: 1, difficulty: 'ROOKIE', innings: 3, userHome: true };
+  /** Be a Player: the hitter you control. */
+  hero: Player | null = null;
 
   private rosters = new Map<number, Promise<Team>>();
   private raf = 0;

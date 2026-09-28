@@ -4,6 +4,7 @@ import { C } from '../render/palette';
 import { teamColors } from '../data/teamColors';
 import { TitleScene } from './TitleScene';
 import { SetupScene } from './SetupScene';
+import { afterUserTeam } from './flow';
 
 const COLS = 5;
 
@@ -50,7 +51,7 @@ export class TeamSelectScene implements Scene {
       if (this.step === 'user') {
         this.game.userTeam = team;
         if (this.game.cpuTeam?.id === team.id) this.game.cpuTeam = null;
-        this.game.go(new TeamSelectScene(this.game, 'cpu'));
+        afterUserTeam(this.game, team);
       } else {
         this.game.cpuTeam = team;
         this.game.go(new SetupScene(this.game));
