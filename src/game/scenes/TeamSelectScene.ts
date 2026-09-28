@@ -60,7 +60,11 @@ export class TeamSelectScene implements Scene {
 
   render(g: Gfx) {
     g.clear(C.navy);
-    g.ctext(this.step === 'user' ? 'CHOOSE YOUR TEAM' : 'CHOOSE OPPONENT', 8, C.yellow);
+    const two = this.game.settings.players === 2;
+    const title = this.step === 'user'
+      ? two ? 'PLAYER 1: CHOOSE TEAM' : 'CHOOSE YOUR TEAM'
+      : two ? 'PLAYER 2: CHOOSE TEAM' : 'CHOOSE OPPONENT';
+    g.ctext(title, 8, C.yellow);
     const teams = this.game.teams;
     const rows = Math.ceil(teams.length / COLS);
     const cellH = rows > 6 ? 18 : 22;
@@ -78,7 +82,7 @@ export class TeamSelectScene implements Scene {
     const sel = teams[this.idx];
     g.rect(0, 186, 256, 38, C.black);
     if (sel) g.ctext(sel.name.toUpperCase(), 192, C.white);
-    if (this.step === 'cpu' && this.game.userTeam) g.ctext(`YOU: ${this.game.userTeam.name.toUpperCase()}`, 202, C.light);
+    if (this.step === 'cpu' && this.game.userTeam) g.ctext(`${two ? 'P1' : 'YOU'}: ${this.game.userTeam.name.toUpperCase()}`, 202, C.light);
     g.ctext('ARROWS MOVE  A PICK  B BACK', 213, C.gray);
   }
 }

@@ -16,6 +16,7 @@ import { drawBall, drawBatter, drawCatcher, drawDot, drawPitcher, kitFor, type K
 import { FIELDER_SPOT, basePt, drawField, fieldPt, HOME } from '../render/field';
 import { drawHUD, drawLineScore } from '../render/hud';
 import { TitleScene } from './TitleScene';
+import type { Who } from '../engine/input';
 
 type Phase = 'intro' | 'aim' | 'windup' | 'flight' | 'hitAway' | 'field' | 'result' | 'switch' | 'final';
 
@@ -27,6 +28,9 @@ const ZH = 16;
 const toScreen = (l: Loc): [number, number] => [ZX + l.x * ZW, ZY - l.y * ZH];
 const MOUND: [number, number] = [128, 86];
 const CURSOR_SPEED = 2.6; // zone units per second
+
+/** 0 = computer, 1 = player 1, 2 = player 2. */
+export type Controller = 0 | 1 | 2;
 
 interface Banner {
   big: string;
@@ -41,7 +45,8 @@ export class PlayScene implements Scene {
   private rnd = Math.random;
   private firstPA = true;
 
-  private cursor: Loc = { x: 0, y: 0 };
+  private cursor: Loc = { x: 0, y: 0 }; // batter's aim
+  private target: Loc = { x: 0, y: 0 }; // pitcher's target
   private pitchType: PitchType = 'FB';
   private pitch: Pitch | null = null;
   private releaseAt = 0;
@@ -58,7 +63,8 @@ export class PlayScene implements Scene {
     private game: RetroGame,
     away: GameTeam,
     home: GameTeam,
-    private userSide: 'home' | 'away',
+    /** Who controls each team: 0 = computer, 1 = player 1, 2 = player 2. */
+    private ctl: Record<'home' | 'away', Controller>,
     innings: number,
     private diff: DiffConfig,
   ) {
@@ -66,8 +72,42 @@ export class PlayScene implements Scene {
     this.startPA();
   }
 
-  private get userBatting() {
-    return (this.s.half === 'top') === (this.userSide === 'away');
+  private get batSide(): 'home' | 'away' {
+    return this.s.half === 'top' ? 'away' : 'home';
+  }
+
+  private get pitchSide(): 'home' | 'away' {
+    return this.s.half === 'top' ? 'home' : 'away';
+  }
+
+  /** The player number at the plate (0 = computer). */
+  private get batterCtl() {
+    return this.ctl[this.batSide];
+  }
+
+  private get pitcherCtl() {
+    return this.ctl[this.pitchSide];
+  }
+
+  private get humanBats() {
+    return this.batterCtl !== 0;
+  }
+
+  private get humanPitches() {
+    return this.pitcherCtl !== 0;
+  }
+
+  private get twoPlayer() {
+    return this.ctl.home !== 0 && this.ctl.away !== 0;
+  }
+
+  /** Whose buttons to read. In one-player mode anyone's keys work. */
+  private who(c: Controller): Who {
+    return this.twoPlayer && c !== 0 ? c : undefined;
+  }
+
+  private get windupLen() {
+    return this.humanBats ? 0.9 : 0.45;
   }
 
   private kit(side: 'home' | 'away'): Kit {
@@ -93,6 +133,7 @@ export class PlayScene implements Scene {
     }
     this.firstPA = false;
     this.cursor = { x: 0, y: 0 };
+    this.target = { x: 0, y: 0 };
     this.setPhase('intro');
   }
 
@@ -102,18 +143,19 @@ export class PlayScene implements Scene {
     this.cpuSwingIn = null;
     this.outcome = null;
     this.banner = null;
-    if (this.userBatting) this.setPhase('windup');
-    else this.setPhase('aim');
+    this.setPhase(this.humanPitches ? 'aim' : 'windup');
   }
 
   private throwPitch(now: number) {
     const f = fielding(this.s);
     const b = currentBatter(this.s).player;
-    if (this.userBatting) {
+    if (this.humanPitches) {
+      this.pitch = makePitch(f.pitcher, f.pitches, this.pitchType, { ...this.target }, this.rnd, this.diff, this.diff.pitchScatter);
+    } else {
       const { type, target } = choosePitch(this.s.balls, this.s.strikes, this.rnd, this.diff);
       this.pitch = makePitch(f.pitcher, f.pitches, type, target, this.rnd, this.diff);
-    } else {
-      this.pitch = makePitch(f.pitcher, f.pitches, this.pitchType, { ...this.cursor }, this.rnd, this.diff, this.diff.pitchScatter);
+    }
+    if (!this.humanBats) {
       this.cpuSwingIn = cpuSwing(b, f.pitcher, this.pitch, this.s.balls, this.s.strikes, fatigue(f.pitcher, f.pitches), this.rnd, this.diff);
     }
     this.releaseAt = now;
@@ -125,7 +167,7 @@ export class PlayScene implements Scene {
     const pitch = this.pitch!;
     const batter = currentBatter(this.s).player;
     let outcome: PitchOutcome;
-    if (this.userBatting) {
+    if (this.humanBats) {
       if (this.swingAt == null) {
         outcome = { kind: isStrike(pitch.loc) ? 'called' : 'ball' };
       } else {
@@ -188,8 +230,9 @@ export class PlayScene implements Scene {
   }
 
   private finish() {
-    const userWon = total(this.s[this.userSide]) > total(this.s[this.userSide === 'home' ? 'away' : 'home']);
-    if (userWon) this.game.chip.charge();
+    // A human always wins in two-player mode, so always celebrate there.
+    const winner = total(this.s.home) > total(this.s.away) ? this.ctl.home : this.ctl.away;
+    if (winner !== 0) this.game.chip.charge();
     else this.game.chip.lose();
     this.setPhase('final');
   }
@@ -213,23 +256,25 @@ export class PlayScene implements Scene {
     const input = this.game.input;
     const chip = this.game.chip;
     const skip = input.pressed('a');
+    const bw = this.who(this.batterCtl);
+    const pw = this.who(this.pitcherCtl);
 
     if (input.pressed('start') && this.phase !== 'final') {
       this.game.paused = true;
       return;
     }
 
-    // Aim cursor: batting eye (Pro/All-Star) or pitch target.
-    const canAim =
-      (this.userBatting && this.diff.autoAim < 1 && (this.phase === 'windup' || this.phase === 'flight')) ||
-      (!this.userBatting && this.phase === 'aim');
-    if (canAim) {
-      const dx = (input.down('right') ? 1 : 0) - (input.down('left') ? 1 : 0);
-      const dy = (input.down('up') ? 1 : 0) - (input.down('down') ? 1 : 0);
-      const lim = this.userBatting ? 1.4 : 1.7;
-      this.cursor.x = clamp(this.cursor.x + dx * CURSOR_SPEED * dt, -lim, lim);
-      this.cursor.y = clamp(this.cursor.y + dy * CURSOR_SPEED * dt, -lim, lim);
+    const steer = (c: Loc, w: Who, lim: number) => {
+      const dx = (input.down('right', w) ? 1 : 0) - (input.down('left', w) ? 1 : 0);
+      const dy = (input.down('up', w) ? 1 : 0) - (input.down('down', w) ? 1 : 0);
+      c.x = clamp(c.x + dx * CURSOR_SPEED * dt, -lim, lim);
+      c.y = clamp(c.y + dy * CURSOR_SPEED * dt, -lim, lim);
+    };
+    // Batter's aim (Pro/All-Star) while the pitch is coming; pitcher's target before the throw.
+    if (this.humanBats && this.diff.autoAim < 1 && (this.phase === 'windup' || this.phase === 'flight')) {
+      steer(this.cursor, bw, 1.4);
     }
+    if (this.humanPitches && this.phase === 'aim') steer(this.target, pw, 1.7);
 
     switch (this.phase) {
       case 'intro':
@@ -237,17 +282,16 @@ export class PlayScene implements Scene {
         break;
 
       case 'aim': {
-        if (input.pressed('b')) {
+        if (input.pressed('b', pw)) {
           this.pitchType = PITCH_TYPES[(PITCH_TYPES.indexOf(this.pitchType) + 1) % PITCH_TYPES.length];
           chip.blip();
         }
-        if (skip) this.setPhase('windup');
+        if (input.pressed('a', pw)) this.setPhase('windup');
         break;
       }
 
       case 'windup': {
-        const len = this.userBatting ? 0.9 : 0.45;
-        if (this.t >= len) this.throwPitch(now);
+        if (this.t >= this.windupLen) this.throwPitch(now);
         break;
       }
 
@@ -255,9 +299,9 @@ export class PlayScene implements Scene {
         const pitch = this.pitch!;
         const elapsed = now - this.releaseAt;
         const batter = currentBatter(this.s).player;
-        if (this.userBatting) {
-          if (this.swingAt == null && skip) {
-            this.swingAt = input.pressedAt('a');
+        if (this.humanBats) {
+          if (this.swingAt == null && input.pressed('a', bw)) {
+            this.swingAt = input.pressedAt('a', bw);
             chip.swing();
           }
           const late = timingWindow(batter, this.diff) * 1.5;
@@ -385,14 +429,13 @@ export class PlayScene implements Scene {
     // pitcher pose
     let pose: PitcherPose = 'set';
     if (this.phase === 'windup') {
-      const len = this.userBatting ? 0.9 : 0.45;
-      const f = this.t / len;
+      const f = this.t / this.windupLen;
       pose = f < 0.4 ? 'set' : f < 0.85 ? 'kick' : 'release';
     } else if (this.phase === 'flight' && now - this.releaseAt < 250) pose = 'release';
     drawPitcher(g, MOUND[0], MOUND[1], pitcher.throws, fKit, pose);
 
     // strike zone
-    const zoneColor = this.userBatting ? 'rgba(252,252,252,0.35)' : 'rgba(252,252,252,0.6)';
+    const zoneColor = this.humanPitches ? 'rgba(252,252,252,0.6)' : 'rgba(252,252,252,0.35)';
     g.frame(ZX - ZW, ZY - ZH, ZW * 2 + 1, ZH * 2 + 1, zoneColor);
 
     // ball in flight
@@ -420,8 +463,8 @@ export class PlayScene implements Scene {
 
     // batter
     let swing = -1;
-    if (this.userBatting && this.swingAt != null) swing = (now - this.swingAt) / 200;
-    if (!this.userBatting && this.cpuSwingIn && this.pitch && this.phase !== 'windup' && this.phase !== 'aim') {
+    if (this.humanBats && this.swingAt != null) swing = (now - this.swingAt) / 200;
+    if (!this.humanBats && this.cpuSwingIn && this.pitch && this.phase !== 'windup' && this.phase !== 'aim') {
       // The computer's timing error is in unassisted windows, so animate with those.
       const tW = 90 + batter.bat.contact * 5;
       const start = this.releaseAt + this.pitch.travelMs + this.cpuSwingIn.t * tW - 70;
@@ -432,12 +475,12 @@ export class PlayScene implements Scene {
     drawBatter(g, bx, 122, batter.bats, bKit, swing);
 
     // catcher with mitt at the target
-    const mittLoc = !this.userBatting && this.phase === 'aim' ? this.cursor : this.pitch ? (this.phase === 'flight' ? this.pitch.target : this.pitch.loc) : { x: 0, y: 0 };
+    const mittLoc = this.humanPitches && this.phase === 'aim' ? this.target : this.pitch ? (this.phase === 'flight' ? this.pitch.target : this.pitch.loc) : { x: 0, y: 0 };
     drawCatcher(g, 128, 180, fKit, toScreen(mittLoc));
 
     if (ballPos) {
       // Timing cue (Rookie/Pro): the ball glows while a swing now would be on time.
-      if (this.phase === 'flight' && this.pitch && this.userBatting && this.diff.cue && this.swingAt == null) {
+      if (this.phase === 'flight' && this.pitch && this.humanBats && this.diff.cue && this.swingAt == null) {
         const t = (now - this.releaseAt - this.pitch.travelMs) / timingWindow(batter, this.diff);
         if (t > -0.6 && t < 0.45) g.circle(ballPos[0], ballPos[1], ballR + 3, C.yellow);
       }
@@ -449,14 +492,14 @@ export class PlayScene implements Scene {
     }
 
     // aim cursor
-    if (this.userBatting && this.diff.autoAim < 1 && (this.phase === 'windup' || this.phase === 'flight')) {
+    if (this.humanBats && this.diff.autoAim < 1 && (this.phase === 'windup' || this.phase === 'flight')) {
       const [cx, cy] = toScreen(this.cursor);
       const r = reachOf(batter, this.diff) * ZH * (1 - this.diff.autoAim * 0.5);
       g.frame(cx - r * 1.4, cy - r, r * 2.8, r * 2, C.yellow);
       g.rect(cx, cy, 1, 1, C.yellow);
     }
-    if (!this.userBatting && this.phase === 'aim') {
-      const [cx, cy] = toScreen(this.cursor);
+    if (this.humanPitches && this.phase === 'aim') {
+      const [cx, cy] = toScreen(this.target);
       if (Math.floor(now / 200) % 2 === 0) g.frame(cx - 5, cy - 5, 11, 11, C.yellow);
       this.renderPitchMenu(g);
     }
@@ -537,12 +580,13 @@ export class PlayScene implements Scene {
     } else {
       g.text(`${batting(s).gt.team.abbr} AT BAT`, 3, 208, C.light);
     }
+    const tag = (c: Controller) => (this.twoPlayer ? `P${c} ` : '');
+    const batting_ = this.humanBats && (this.phase === 'windup' || this.phase === 'flight');
     const hint =
-      this.phase === 'aim' ? 'ARROWS AIM  B PITCH  A THROW' :
-      this.userBatting && (this.phase === 'windup' || this.phase === 'flight')
-        ? this.diff.autoAim < 1 ? 'ARROWS AIM   A SWING' : 'A = SWING!'
+      this.phase === 'aim' ? `${tag(this.pitcherCtl)}ARROWS AIM  B PITCH  A THROW` :
+      batting_ ? `${tag(this.batterCtl)}${this.diff.autoAim < 1 ? 'ARROWS AIM   A SWING' : 'A = SWING!'}`
         : `P ${f.pitcher.name}  ${f.pitches}P`;
-    g.text(hint.slice(0, 42), 3, 216, this.phase === 'aim' || hint.startsWith('A') || hint.startsWith('ARROWS') ? C.yellow : C.light);
+    g.text(hint.slice(0, 42), 3, 216, this.phase === 'aim' || batting_ ? C.yellow : C.light);
   }
 
   private renderBanner(g: Gfx, b: Banner) {
@@ -561,19 +605,24 @@ export class PlayScene implements Scene {
     g.clear(C.navy);
     g.rect(0, 0, 256, 40, C.wall);
     if (this.phase === 'final') {
-      const u = total(s[this.userSide]);
-      const o = total(s[this.userSide === 'home' ? 'away' : 'home']);
+      const winner = total(s.home) > total(s.away) ? this.ctl.home : this.ctl.away;
       g.ctext('FINAL', 12, C.white, 2);
       drawLineScore(g, s, 60);
-      g.ctext(u > o ? 'YOU WIN!' : 'YOU LOSE', 112, u > o ? C.yellow : C.orange, 3);
+      if (this.twoPlayer) g.ctext(`P${winner} WINS!`, 112, C.yellow, 3);
+      else g.ctext(winner ? 'YOU WIN!' : 'YOU LOSE', 112, winner ? C.yellow : C.orange, 3);
       if (this.t > 1 && Math.floor(this.t * 2) % 2 === 0) g.ctext('PRESS A FOR NEW GAME', 180, C.white);
     } else {
       const label = s.half === 'top' ? `MIDDLE OF THE ${ordinal(s.inning)}` : `END OF THE ${ordinal(s.inning)}`;
       g.ctext(label, 16, C.white);
       drawLineScore(g, s, 60);
       const nextBat = s.half === 'top' ? s.home : s.away;
-      const userNext = (s.half === 'top') === (this.userSide === 'home');
-      g.ctext(userNext ? 'YOUR TURN TO BAT' : 'YOUR TURN TO PITCH', 120, C.yellow);
+      // Next half: the side that just pitched comes up to bat.
+      const nextBatCtl = this.ctl[this.pitchSide];
+      const nextPitchCtl = this.ctl[this.batSide];
+      g.ctext(
+        this.twoPlayer ? `P${nextBatCtl} BATS - P${nextPitchCtl} PITCHES` : nextBatCtl ? 'YOUR TURN TO BAT' : 'YOUR TURN TO PITCH',
+        120, C.yellow,
+      );
       g.ctext(`${nextBat.gt.team.name.toUpperCase()} UP`, 134, C.light);
       g.ctext('PRESS A', 180, C.white);
     }

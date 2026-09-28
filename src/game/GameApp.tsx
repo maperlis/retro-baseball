@@ -76,8 +76,10 @@ export default function GameApp() {
       </div>
 
       <p className="rb__keys">
-        Keyboard: arrows move · <kbd>Z</kbd>/<kbd>Space</kbd> = A (swing, throw) · <kbd>X</kbd> = B (pitch type)
-        · <kbd>Enter</kbd> pause · <kbd>M</kbd> sound
+        1 player: arrows move · <kbd>Z</kbd>/<kbd>Space</kbd> = A (swing, throw) · <kbd>X</kbd> = B (pitch type)
+        <br />
+        2 players: P1 <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> + <kbd>F</kbd>/<kbd>G</kbd> · P2 arrows +{' '}
+        <kbd>K</kbd>/<kbd>L</kbd> · <kbd>Enter</kbd> pause · <kbd>M</kbd> sound
       </p>
     </div>
   );

@@ -7,7 +7,7 @@ offline.
 
 ## How to play
 
-1. Press **START**, pick your team, then pick an opponent.
+1. Choose **1 PLAYER** (vs. the computer) or **2 PLAYERS**, then pick teams.
 2. Choose a **level** and **innings** (3, 6 or 9), then **PLAY BALL!**
 3. **Batting:** tap **A** to swing as the pitch reaches the plate. Timing is
    everything. On Pro and All-Star, move the yellow aim box over the ball with
@@ -24,6 +24,16 @@ offline.
 **Controls:** on a phone, use the on-screen D-pad and A/B buttons (portrait or
 landscape). On a keyboard, use the arrows, `Z`/`Space` = A, `X` = B,
 `Enter` = pause and `M` = sound.
+
+### Two players
+
+Choose **2 PLAYERS** on the title screen. Player 1 and Player 2 each pick a
+team, and the two of you take turns batting and pitching.
+
+- **Same phone:** the on-screen buttons control whoever's turn it is, so the
+  pitcher aims and throws, then hands off to the batter to swing.
+- **Keyboard:** Player 1 uses `W A S D` + `F` (A) / `G` (B), and Player 2 uses
+  the arrows + `K` (A) / `L` (B). Each player's keys only work on their turn.
 
 ## Real MLB data
 

@@ -62,9 +62,12 @@ export class SetupScene implements Scene {
       const user = buildLineup(u, rnd);
       const cpu = buildLineup(c, rnd);
       this.game.chip.charge();
+      // Player 1 has the first-picked team; the other is the computer or player 2.
+      const other = settings.players === 2 ? 2 : 0;
+      const ctl = settings.userHome ? { home: 1, away: other } as const : { home: other, away: 1 } as const;
       this.game.go(
         new PlayScene(this.game, settings.userHome ? cpu : user, settings.userHome ? user : cpu,
-          settings.userHome ? 'home' : 'away', settings.innings, DIFFICULTIES[settings.difficulty]),
+          ctl, settings.innings, DIFFICULTIES[settings.difficulty]),
       );
     } catch {
       this.status = 'error';
@@ -81,14 +84,15 @@ export class SetupScene implements Scene {
       g.stext(abbr, x + Math.round((72 - (abbr.length * 12 - 2)) / 2), 22, C.white, 2);
       g.text(who, x + Math.round((72 - who.length * 6) / 2), 54, C.light);
     };
-    if (userTeam) badge(userTeam.abbr, 24, 'YOU');
-    if (cpuTeam) badge(cpuTeam.abbr, 160, 'CPU');
+    const two = settings.players === 2;
+    if (userTeam) badge(userTeam.abbr, 24, two ? 'PLAYER 1' : 'YOU');
+    if (cpuTeam) badge(cpuTeam.abbr, 160, two ? 'PLAYER 2' : 'CPU');
     g.ctext('VS', 26, C.yellow, 2);
 
     const rows: [Item, string, string][] = [
       ['difficulty', 'LEVEL', DIFFICULTIES[settings.difficulty].label],
       ['innings', 'INNINGS', String(settings.innings)],
-      ['side', 'YOU ARE', settings.userHome ? 'HOME' : 'AWAY'],
+      ['side', two ? 'P1 IS' : 'YOU ARE', settings.userHome ? 'HOME' : 'AWAY'],
     ];
     rows.forEach(([, label, value], i) => {
       const y = 78 + i * 18;

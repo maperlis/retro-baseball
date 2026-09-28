@@ -11,6 +11,12 @@ export class TitleScene implements Scene {
   update(dt: number) {
     this.t += dt;
     const i = this.game.input;
+    const st = this.game.settings;
+    if (i.pressed('up') || i.pressed('down')) {
+      st.players = st.players === 1 ? 2 : 1;
+      this.game.saveSettings();
+      this.game.chip.blip();
+    }
     if ((i.pressed('a') || i.pressed('start')) && this.game.teams.length) {
       this.game.chip.select();
       this.game.go(new TeamSelectScene(this.game, 'user'));
@@ -37,13 +43,16 @@ export class TitleScene implements Scene {
 
     if (!this.game.teams.length) {
       g.ctext('LOADING TEAMS...', 136, C.white);
-    } else if (Math.floor(this.t * 2) % 2 === 0) {
-      g.ctext('PRESS START', 136, C.white);
+    } else {
+      const two = this.game.settings.players === 2;
+      const blink = Math.floor(this.t * 3) % 2 === 0;
+      g.stext(`${!two && blink ? '>' : ' '} 1 PLAYER`, 98, 128, two ? C.light : C.yellow);
+      g.stext(`${two && blink ? '>' : ' '} 2 PLAYERS`, 98, 140, two ? C.yellow : C.light);
     }
     const src = this.game.source;
     const label =
       src === 'live' ? 'LIVE MLB ROSTERS' : src === 'cached' ? 'SAVED ROSTERS (OFFLINE)' : src === 'offline' ? 'OFFLINE - DEMO TEAMS' : '';
-    g.ctext(label, 154, C.light);
-    g.ctext('Z/SPACE OR A = GO   M = SOUND', 200, C.white);
+    g.ctext(label, 160, C.light);
+    g.ctext('UP/DOWN PICK   A OR START = GO', 200, C.white);
   }
 }

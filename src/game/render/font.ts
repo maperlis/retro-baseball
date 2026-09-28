@@ -34,6 +34,19 @@ const G: Record<string, string> = {
   '%': '11000110010001000100010001001100011',
 };
 
+/**
+ * Player names carry accents (Ramírez, José, Muñoz) the 8-bit font doesn't
+ * have. Strip the accent so "Í" draws as "I" instead of "?".
+ */
+export function toGlyphText(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[‘’`´]/g, "'")
+    .replace(/[–—]/g, '-');
+}
+
 export const GLYPH_W = 6; // 5 + 1 spacing
 export const GLYPH_H = 8;
 
@@ -47,7 +60,7 @@ export function drawText(
 ) {
   ctx.fillStyle = color;
   let cx = Math.round(x);
-  for (const ch of text.toUpperCase()) {
+  for (const ch of toGlyphText(text)) {
     const g = G[ch] ?? G['?'];
     for (let i = 0; i < 35; i++) {
       if (g.charCodeAt(i) === 49) {
@@ -58,4 +71,4 @@ export function drawText(
   }
 }
 
-export const textWidth = (text: string, scale = 1) => text.length * GLYPH_W * scale - scale;
+export const textWidth = (text: string, scale = 1) => toGlyphText(text).length * GLYPH_W * scale - scale;

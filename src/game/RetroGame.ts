@@ -13,6 +13,8 @@ export interface Scene {
 }
 
 export interface Settings {
+  /** 1 = you vs the computer; 2 = two people on one device. */
+  players: 1 | 2;
   difficulty: Difficulty;
   innings: number;
   userHome: boolean;
@@ -31,7 +33,7 @@ export class RetroGame {
   source: Source | 'loading' = 'loading';
   userTeam: TeamInfo | null = null;
   cpuTeam: TeamInfo | null = null;
-  settings: Settings = { difficulty: 'ROOKIE', innings: 3, userHome: true };
+  settings: Settings = { players: 1, difficulty: 'ROOKIE', innings: 3, userHome: true };
 
   private rosters = new Map<number, Promise<Team>>();
   private raf = 0;
